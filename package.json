@@ -31,10 +31,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "git+https://gitcode.com/openharmony-mcp/deveco-arkts-lsp.git"
   },
+  "homepage": "https://gitcode.com/openharmony-mcp/deveco-arkts-lsp",
   "bugs": {
-    "url": ""
+    "url": "https://gitcode.com/openharmony-mcp/deveco-arkts-lsp/issues"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

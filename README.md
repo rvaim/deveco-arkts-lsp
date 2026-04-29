@@ -14,7 +14,7 @@ An MCP (Model Context Protocol) server that bridges the ArkTS/HarmonyOS Language
 
 ```bash
 # Clone the repo
-git clone <repo-url>
+git clone https://gitcode.com/openharmony-mcp/deveco-arkts-lsp.git
 cd deveco-arkts-lsp
 
 # Install dependencies

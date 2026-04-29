@@ -1,0 +1,53 @@
+{
+  "name": "deveco-arkts-lsp",
+  "version": "1.0.0",
+  "description": "MCP server that bridges ArkTS/HarmonyOS Language Server Protocol to Model Context Protocol, providing code intelligence tools (find references, go to definition, hover, symbols, call hierarchy).",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "bin": {
+    "deveco-arkts-lsp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "start.sh",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "lsp",
+    "arkts",
+    "harmonyos",
+    "openharmony",
+    "deveco",
+    "language-server",
+    "code-intelligence"
+  ],
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "bugs": {
+    "url": ""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "vscode-jsonrpc": "^8.2.1",
+    "vscode-languageserver-protocol": "^3.17.5",
+    "vscode-uri": "^3.1.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

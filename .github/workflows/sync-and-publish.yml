@@ -3,7 +3,7 @@ name: 同步上游并发布 npm
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 3 * * *"
 
 concurrency:
   group: sync-and-publish

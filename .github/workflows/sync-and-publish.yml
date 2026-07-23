@@ -143,17 +143,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          error_file="$RUNNER_TEMP/npm-view-error.log"
-          if npm view "$PACKAGE_NAME@$MIRROR_VERSION" version --json \
-            > "$RUNNER_TEMP/npm-view.json" 2> "$error_file"; then
-            {
-              echo "SHOULD_PUBLISH=false"
-              echo "PUBLISH_RESULT=版本已经存在，未发布"
-            } >> "$GITHUB_ENV"
+          error_file="$RUNNER_TEMP/npm-dist-tag-error.log"
+          tags_file="$RUNNER_TEMP/npm-dist-tags.txt"
+          if npm dist-tag ls "$PACKAGE_NAME" > "$tags_file" 2> "$error_file"; then
+            latest_version="$(sed -n 's/^latest: //p' "$tags_file")"
+            if [[ -z "$latest_version" ]]; then
+              echo "npm 包存在，但没有 latest 标签。" >&2
+              exit 1
+            fi
+            if [[ "$latest_version" == "$MIRROR_VERSION" ]]; then
+              {
+                echo "SHOULD_PUBLISH=false"
+                echo "PUBLISH_RESULT=上游版本号没有变化，未发布"
+              } >> "$GITHUB_ENV"
+            else
+              {
+                echo "SHOULD_PUBLISH=true"
+                echo "PUBLISH_RESULT=上游版本号已经变化，等待发布"
+              } >> "$GITHUB_ENV"
+            fi
           elif grep -q "E404" "$error_file"; then
             {
               echo "SHOULD_PUBLISH=true"
-              echo "PUBLISH_RESULT=发现新的上游版本，等待发布"
+              echo "PUBLISH_RESULT=npm 包尚不存在，等待首次发布"
             } >> "$GITHUB_ENV"
           else
             cat "$error_file" >&2

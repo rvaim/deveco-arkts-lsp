@@ -55,6 +55,13 @@ jobs:
             echo "UPSTREAM_SHA=$upstream_sha"
           } >> "$GITHUB_ENV"
 
+      - name: 配置 Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
       - name: 准备作用域发布副本
         shell: bash
         run: |

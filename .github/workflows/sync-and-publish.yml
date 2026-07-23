@@ -22,7 +22,6 @@ env:
   MIRROR_REPOSITORY: rvaim/deveco-arkts-lsp
   INCLUDE_NOTICE: "false"
   FIX_NODE_BIN: "true"
-  VERSION_SUFFIX: "-rvaim.1"
 
 jobs:
   sync-and-publish:
@@ -82,7 +81,7 @@ jobs:
           const packagePath = path.join(process.env.PACKAGE_DIR, 'package.json');
           const packageData = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
           const upstreamVersion = packageData.version;
-          const publishedVersion = `${upstreamVersion}${process.env.VERSION_SUFFIX || ''}`;
+          const publishedVersion = upstreamVersion;
 
           packageData.name = process.env.PACKAGE_NAME;
           packageData.version = publishedVersion;
@@ -105,7 +104,7 @@ jobs:
             upstreamVersion,
             sourceCodeModified: false,
             packagingChanges: [
-              '调整 npm 包名、版本号和仓库元数据',
+              '调整 npm 包名和仓库元数据',
               '在 npm README 顶部加入非官方镜像说明'
             ]
           };
@@ -150,7 +149,7 @@ jobs:
             `> 这是由 rvaim 维护的非官方 npm 再发布版本，功能源代码未经修改。`,
             `> 上游：${process.env.UPSTREAM_REPOSITORY}`,
             `> 上游提交：${process.env.UPSTREAM_SHA}`,
-            '> 发布副本仅调整 npm 包名、版本号、仓库元数据、启动包装和本段说明。',
+            '> 发布副本仅调整 npm 包名、仓库元数据、启动包装和本段说明。',
             '',
             ''
           ].join('\n');

@@ -4,7 +4,7 @@
 
 - 上游仓库：`https://gitcode.com/openharmony-mcp/deveco-arkts-lsp`
 - npm 包：`@rvaim/deveco-arkts-lsp`
-- 同步频率：每天检查一次，也支持手动触发
+- 同步频率：每天检查一次（北京时间约 23:30），也支持手动触发
 - 功能源码：保持上游内容不变
 
 GitHub Actions 只在临时发布目录中调整 npm 包名、版本号、仓库元数据和启动包装，并在发布包的 README 顶部加入镜像说明。仓库会定期同步所有上游提交，但只有上游 `package.json` 的版本号出现尚未处理的新值时，才会发布 npm 包。成功发布后会在 `.github/npm-upstream-version` 中记录上游版本；普通源码同步、重复运行和 npm 包被删除都不会触发同一上游版本的再次发布。

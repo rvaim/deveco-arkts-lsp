@@ -17,9 +17,12 @@ env:
   UPSTREAM_REPOSITORY: https://gitcode.com/openharmony-mcp/deveco-arkts-lsp.git
   UPSTREAM_BRANCH: master
   PACKAGE_NAME: "@rvaim/deveco-arkts-lsp"
+  BINARY_NAME: deveco-arkts-lsp
+  EXPECTED_TOOL_COUNT: "5"
   MIRROR_REPOSITORY: rvaim/deveco-arkts-lsp
   INCLUDE_NOTICE: "false"
   FIX_NODE_BIN: "true"
+  VERSION_SUFFIX: "-rvaim.1"
 
 jobs:
   sync-and-publish:
@@ -79,13 +82,18 @@ jobs:
           const packagePath = path.join(process.env.PACKAGE_DIR, 'package.json');
           const packageData = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
           const upstreamVersion = packageData.version;
+          const publishedVersion = `${upstreamVersion}${process.env.VERSION_SUFFIX || ''}`;
 
           packageData.name = process.env.PACKAGE_NAME;
+          packageData.version = publishedVersion;
           packageData.repository = {
             type: 'git',
             url: `git+https://github.com/${process.env.MIRROR_REPOSITORY}.git`
           };
           packageData.homepage = `https://github.com/${process.env.MIRROR_REPOSITORY}#readme`;
+          packageData.bugs = {
+            url: `https://github.com/${process.env.MIRROR_REPOSITORY}/issues`
+          };
           packageData.publishConfig = {
             ...(packageData.publishConfig || {}),
             access: 'public',
@@ -97,14 +105,26 @@ jobs:
             upstreamVersion,
             sourceCodeModified: false,
             packagingChanges: [
-              '调整 npm 包名和仓库元数据',
+              '调整 npm 包名、版本号和仓库元数据',
               '在 npm README 顶部加入非官方镜像说明'
             ]
           };
 
           if (process.env.FIX_NODE_BIN === 'true') {
+            if (typeof packageData.bin === 'string') {
+              packageData.bin = packageData.bin.replace(/^\.\//, '');
+            } else if (packageData.bin && typeof packageData.bin === 'object') {
+              for (const binName of Object.keys(packageData.bin)) {
+                packageData.bin[binName] = packageData.bin[binName].replace(/^\.\//, '');
+              }
+            }
+            if (packageData.scripts) {
+              delete packageData.scripts.install;
+              delete packageData.scripts.prepare;
+            }
             packageData.rvaimMirror.packagingChanges.push(
-              '为编译后的 npm 可执行入口补充启动标记'
+              '为编译后的 npm 可执行入口补充启动标记',
+              '移除发布包中多余的 install 和 prepare 重新编译脚本'
             );
           }
 
@@ -130,42 +150,47 @@ jobs:
             `> 这是由 rvaim 维护的非官方 npm 再发布版本，功能源代码未经修改。`,
             `> 上游：${process.env.UPSTREAM_REPOSITORY}`,
             `> 上游提交：${process.env.UPSTREAM_SHA}`,
-            '> 发布副本仅调整 npm 包名、仓库元数据、启动包装和本段说明。',
+            '> 发布副本仅调整 npm 包名、版本号、仓库元数据、启动包装和本段说明。',
             '',
             ''
           ].join('\n');
           fs.writeFileSync(readmePath, `${mirrorNotice}${originalReadme}`);
 
-          fs.appendFileSync(process.env.GITHUB_ENV, `MIRROR_VERSION=${upstreamVersion}\n`);
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `UPSTREAM_VERSION=${upstreamVersion}\nPUBLISHED_VERSION=${publishedVersion}\n`
+          );
           NODE
 
-      - name: 检查版本是否需要发布
+      - name: 检查上游版本是否已经处理
         shell: bash
         run: |
           set -euo pipefail
-          error_file="$RUNNER_TEMP/npm-dist-tag-error.log"
-          tags_file="$RUNNER_TEMP/npm-dist-tags.txt"
-          if npm dist-tag ls "$PACKAGE_NAME" > "$tags_file" 2> "$error_file"; then
-            latest_version="$(sed -n 's/^latest: //p' "$tags_file")"
-            if [[ -z "$latest_version" ]]; then
-              echo "npm 包存在，但没有 latest 标签。" >&2
-              exit 1
-            fi
-            if [[ "$latest_version" == "$MIRROR_VERSION" ]]; then
-              {
-                echo "SHOULD_PUBLISH=false"
-                echo "PUBLISH_RESULT=上游版本号没有变化，未发布"
-              } >> "$GITHUB_ENV"
-            else
-              {
-                echo "SHOULD_PUBLISH=true"
-                echo "PUBLISH_RESULT=上游版本号已经变化，等待发布"
-              } >> "$GITHUB_ENV"
-            fi
+          state_file="$GITHUB_WORKSPACE/.github/npm-upstream-version"
+          if [[ -f "$state_file" ]] &&
+             [[ "$(tr -d '\r\n' < "$state_file")" == "$UPSTREAM_VERSION" ]]; then
+            {
+              echo "SHOULD_PUBLISH=false"
+              echo "SHOULD_RECORD_VERSION=false"
+              echo "PUBLISH_RESULT=上游版本号没有变化，未发布"
+            } >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          error_file="$RUNNER_TEMP/npm-version-error.log"
+          version_file="$RUNNER_TEMP/npm-version.json"
+          if npm view "${PACKAGE_NAME}@${PUBLISHED_VERSION}" version --json \
+            > "$version_file" 2> "$error_file"; then
+            {
+              echo "SHOULD_PUBLISH=false"
+              echo "SHOULD_RECORD_VERSION=true"
+              echo "PUBLISH_RESULT=目标版本已存在，未重复发布"
+            } >> "$GITHUB_ENV"
           elif grep -q "E404" "$error_file"; then
             {
               echo "SHOULD_PUBLISH=true"
-              echo "PUBLISH_RESULT=npm 包尚不存在，等待首次发布"
+              echo "SHOULD_RECORD_VERSION=false"
+              echo "PUBLISH_RESULT=发现新的上游版本，等待发布"
             } >> "$GITHUB_ENV"
           else
             cat "$error_file" >&2
@@ -185,25 +210,34 @@ jobs:
             const fs = require('node:fs');
             const path = require('node:path');
             const packageData = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            const binPath = typeof packageData.bin === 'string'
-              ? packageData.bin
-              : Object.values(packageData.bin)[0];
-            const absoluteBinPath = path.resolve(binPath);
-            const content = fs.readFileSync(absoluteBinPath, 'utf8');
-            if (!content.startsWith('#!')) {
-              fs.writeFileSync(absoluteBinPath, `#!/usr/bin/env node\n${content}`);
+            const binPaths = typeof packageData.bin === 'string'
+              ? [packageData.bin]
+              : Object.values(packageData.bin || {});
+            if (binPaths.length === 0) {
+              throw new Error('package.json 没有 npm 可执行入口');
             }
-            fs.chmodSync(absoluteBinPath, 0o755);
+            for (const binPath of binPaths) {
+              const absoluteBinPath = path.resolve(binPath);
+              const content = fs.readFileSync(absoluteBinPath, 'utf8');
+              if (!content.startsWith('#!')) {
+                fs.writeFileSync(absoluteBinPath, `#!/usr/bin/env node\n${content}`);
+              }
+              fs.chmodSync(absoluteBinPath, 0o755);
+            }
           }
           NODE
 
-      - name: 检查发布内容
+      - name: 生成并审计最终压缩包
         if: env.SHOULD_PUBLISH == 'true'
         working-directory: ${{ env.PACKAGE_DIR }}
         shell: bash
         run: |
           set -euo pipefail
-          npm pack --dry-run --ignore-scripts --json > "$RUNNER_TEMP/pack-report.json"
+          npm pack \
+            --ignore-scripts \
+            --json \
+            --pack-destination "$RUNNER_TEMP" \
+            > "$RUNNER_TEMP/pack-report.json"
           node <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
@@ -211,7 +245,11 @@ jobs:
             fs.readFileSync(`${process.env.RUNNER_TEMP}/pack-report.json`, 'utf8')
           )[0];
           const paths = new Set(report.files.map((file) => file.path));
-          for (const requiredPath of ['LICENSE', 'README.md', 'package.json']) {
+          const requiredPaths = ['LICENSE', 'README.md', 'package.json'];
+          if (process.env.INCLUDE_NOTICE === 'true') {
+            requiredPaths.push('NOTICE');
+          }
+          for (const requiredPath of requiredPaths) {
             if (!paths.has(requiredPath)) {
               throw new Error(`发布包缺少必要文件：${requiredPath}`);
             }
@@ -219,32 +257,161 @@ jobs:
           if (report.name !== process.env.PACKAGE_NAME) {
             throw new Error(`发布包名不正确：${report.name}`);
           }
-          const packageData = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          if (report.version !== process.env.PUBLISHED_VERSION) {
+            throw new Error(`发布版本不正确：${report.version}`);
+          }
+          if (report.files.some((file) => file.path.startsWith('src/'))) {
+            throw new Error('发布包不应包含 src 目录');
+          }
+          const tarballPath = path.join(process.env.RUNNER_TEMP, report.filename);
+          if (!fs.existsSync(tarballPath)) {
+            throw new Error(`没有生成最终压缩包：${tarballPath}`);
+          }
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `TARBALL_PATH=${tarballPath}\n`
+          );
+          NODE
+
+          audit_dir="$RUNNER_TEMP/package-audit"
+          mkdir -p "$audit_dir"
+          tar -xzf "$RUNNER_TEMP/$(node -p \
+            "JSON.parse(require('fs').readFileSync('$RUNNER_TEMP/pack-report.json', 'utf8'))[0].filename")" \
+            -C "$audit_dir"
+          export AUDIT_PACKAGE_DIR="$audit_dir/package"
+
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const packageRoot = process.env.AUDIT_PACKAGE_DIR;
+          const packageData = JSON.parse(
+            fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8')
+          );
+
+          if (packageData.name !== process.env.PACKAGE_NAME) {
+            throw new Error(`压缩包内的包名不正确：${packageData.name}`);
+          }
+          if (packageData.version !== process.env.PUBLISHED_VERSION) {
+            throw new Error(`压缩包内的版本不正确：${packageData.version}`);
+          }
+          if (packageData.rvaimMirror?.upstreamCommit !== process.env.UPSTREAM_SHA) {
+            throw new Error('压缩包内记录的上游提交不正确');
+          }
+          if (packageData.rvaimMirror?.sourceCodeModified !== false) {
+            throw new Error('压缩包没有标明功能源代码未经修改');
+          }
+          if (packageData.publishConfig?.access !== 'public') {
+            throw new Error('压缩包没有设置公开发布');
+          }
+          if (fs.existsSync(path.join(packageRoot, 'src'))) {
+            throw new Error('压缩包不应包含 src 目录');
+          }
+
+          const readme = fs.readFileSync(
+            path.join(packageRoot, 'README.md'),
+            'utf8'
+          );
+          if (!readme.includes('非官方 npm 再发布版本') ||
+              !readme.includes(process.env.UPSTREAM_SHA)) {
+            throw new Error('README 的非官方再发布说明不完整');
+          }
+
           const binPaths = typeof packageData.bin === 'string'
             ? [packageData.bin]
-            : Object.values(packageData.bin);
+            : Object.values(packageData.bin || {});
+          if (binPaths.length === 0) {
+            throw new Error('压缩包没有 npm 可执行入口');
+          }
           for (const binPath of binPaths) {
-            const content = fs.readFileSync(path.resolve(binPath), 'utf8');
-            if (!content.startsWith('#!')) {
+            const absoluteBinPath = path.join(packageRoot, binPath);
+            const content = fs.readFileSync(absoluteBinPath, 'utf8');
+            const mode = fs.statSync(absoluteBinPath).mode;
+            if (!content.startsWith('#!/usr/bin/env node\n')) {
               throw new Error(`npm 可执行入口缺少启动标记：${binPath}`);
+            }
+            if ((mode & 0o111) === 0) {
+              throw new Error(`npm 可执行入口没有执行权限：${binPath}`);
+            }
+          }
+          if (!fs.existsSync(path.join(packageRoot, packageData.main))) {
+            throw new Error(`main 入口不存在：${packageData.main}`);
+          }
+          if (process.env.FIX_NODE_BIN === 'true' &&
+              (packageData.scripts?.install || packageData.scripts?.prepare)) {
+            throw new Error('LSP 发布包仍包含 install 或 prepare 重新编译脚本');
+          }
+          if (process.env.INCLUDE_NOTICE === 'true') {
+            const packagedNotice = fs.readFileSync(
+              path.join(packageRoot, 'NOTICE')
+            );
+            const upstreamNotice = fs.readFileSync(
+              path.join(process.env.PACKAGE_DIR, 'NOTICE')
+            );
+            if (!packagedNotice.equals(upstreamNotice)) {
+              throw new Error('NOTICE 与上游内容不一致');
             }
           }
           NODE
 
+      - name: 在空目录正常安装并验证 MCP
+        if: env.SHOULD_PUBLISH == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/clean-install"
+          mkdir -p "$install_dir"
+          cd "$install_dir"
+          npm install --foreground-scripts "$TARBALL_PATH"
+          node "$GITHUB_WORKSPACE/.github/scripts/mcp-smoke-test.mjs" \
+            "$install_dir/node_modules/.bin/$BINARY_NAME"
+
+      - name: 使用冷缓存 npx 验证最终压缩包
+        if: env.SHOULD_PUBLISH == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/npx-cache"
+          env npm_config_cache="$RUNNER_TEMP/npx-cache" \
+            node "$GITHUB_WORKSPACE/.github/scripts/mcp-smoke-test.mjs" \
+            npx \
+            --yes \
+            --package="$TARBALL_PATH" \
+            "$BINARY_NAME"
+
       - name: 发布新版本
         if: env.SHOULD_PUBLISH == 'true'
-        working-directory: ${{ env.PACKAGE_DIR }}
         shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          npm publish \
+          npm publish "$TARBALL_PATH" \
             --access public \
             --tag latest \
             --ignore-scripts \
             --registry https://registry.npmjs.org
-          echo "PUBLISH_RESULT=发布成功" >> "$GITHUB_ENV"
+          {
+            echo "SHOULD_RECORD_VERSION=true"
+            echo "PUBLISH_RESULT=发布成功"
+          } >> "$GITHUB_ENV"
+
+      - name: 记录已经处理的上游版本
+        if: env.SHOULD_RECORD_VERSION == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          state_file="$GITHUB_WORKSPACE/.github/npm-upstream-version"
+          printf '%s\n' "$UPSTREAM_VERSION" > "$state_file"
+
+          git config user.name "rvaim mirror bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$state_file"
+          if git diff --cached --quiet; then
+            echo "版本状态已经是最新值。"
+          else
+            git commit -m "chore: 记录已发布的上游版本"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
 
       - name: 写入任务摘要
         if: always()
@@ -253,7 +420,8 @@ jobs:
           {
             echo "## npm 镜像结果"
             echo
-            echo "- 包：\`$PACKAGE_NAME@$MIRROR_VERSION\`"
+            echo "- 包：\`$PACKAGE_NAME@$PUBLISHED_VERSION\`"
+            echo "- 上游版本：\`$UPSTREAM_VERSION\`"
             echo "- 上游提交：\`$UPSTREAM_SHA\`"
             echo "- 功能源码：未修改"
             echo "- 发布结果：${PUBLISH_RESULT:-未执行}"

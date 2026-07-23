@@ -1,0 +1,241 @@
+name: 同步上游并发布 npm
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+concurrency:
+  group: sync-and-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  UPSTREAM_REPOSITORY: https://gitcode.com/openharmony-mcp/deveco-arkts-lsp.git
+  UPSTREAM_BRANCH: master
+  PACKAGE_NAME: "@rvaim/deveco-arkts-lsp"
+  MIRROR_REPOSITORY: rvaim/deveco-arkts-lsp
+  INCLUDE_NOTICE: "false"
+  FIX_NODE_BIN: "true"
+
+jobs:
+  sync-and-publish:
+    name: 同步、验证并发布
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出镜像仓库
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: 同步 GitCode 上游
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "rvaim mirror bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream "$UPSTREAM_REPOSITORY"
+          git fetch --prune upstream "$UPSTREAM_BRANCH"
+
+          upstream_ref="upstream/$UPSTREAM_BRANCH"
+          if git merge-base --is-ancestor "$upstream_ref" HEAD; then
+            echo "镜像已经包含最新上游提交。"
+          else
+            git merge --no-edit "$upstream_ref"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+          upstream_sha="$(git rev-parse "$upstream_ref")"
+          {
+            echo "UPSTREAM_REF=$upstream_ref"
+            echo "UPSTREAM_SHA=$upstream_sha"
+          } >> "$GITHUB_ENV"
+
+      - name: 准备作用域发布副本
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="$RUNNER_TEMP/package"
+          mkdir -p "$package_dir"
+          git archive "$UPSTREAM_REF" | tar -x -C "$package_dir"
+          export PACKAGE_DIR="$package_dir"
+          echo "PACKAGE_DIR=$package_dir" >> "$GITHUB_ENV"
+
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const packagePath = path.join(process.env.PACKAGE_DIR, 'package.json');
+          const packageData = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+          const upstreamVersion = packageData.version;
+
+          packageData.name = process.env.PACKAGE_NAME;
+          packageData.repository = {
+            type: 'git',
+            url: `git+https://github.com/${process.env.MIRROR_REPOSITORY}.git`
+          };
+          packageData.homepage = `https://github.com/${process.env.MIRROR_REPOSITORY}#readme`;
+          packageData.publishConfig = {
+            ...(packageData.publishConfig || {}),
+            access: 'public',
+            registry: 'https://registry.npmjs.org'
+          };
+          packageData.rvaimMirror = {
+            upstreamRepository: process.env.UPSTREAM_REPOSITORY,
+            upstreamCommit: process.env.UPSTREAM_SHA,
+            upstreamVersion,
+            sourceCodeModified: false,
+            packagingChanges: [
+              '调整 npm 包名和仓库元数据',
+              '在 npm README 顶部加入非官方镜像说明'
+            ]
+          };
+
+          if (process.env.FIX_NODE_BIN === 'true') {
+            packageData.rvaimMirror.packagingChanges.push(
+              '为编译后的 npm 可执行入口补充启动标记'
+            );
+          }
+
+          if (process.env.INCLUDE_NOTICE === 'true') {
+            const files = Array.isArray(packageData.files) ? packageData.files : [];
+            for (const requiredFile of ['NOTICE', 'LICENSE', 'README.md']) {
+              if (!files.includes(requiredFile)) {
+                files.push(requiredFile);
+              }
+            }
+            packageData.files = files;
+            packageData.rvaimMirror.packagingChanges.push('确保 NOTICE、LICENSE 和 README.md 进入发布包');
+          }
+
+          fs.writeFileSync(packagePath, `${JSON.stringify(packageData, null, 2)}\n`);
+
+          const readmePath = path.join(process.env.PACKAGE_DIR, 'README.md');
+          const originalReadme = fs.existsSync(readmePath)
+            ? fs.readFileSync(readmePath, 'utf8')
+            : '';
+          const mirrorNotice = [
+            '> [!IMPORTANT]',
+            `> 这是由 rvaim 维护的非官方 npm 再发布版本，功能源代码未经修改。`,
+            `> 上游：${process.env.UPSTREAM_REPOSITORY}`,
+            `> 上游提交：${process.env.UPSTREAM_SHA}`,
+            '> 发布副本仅调整 npm 包名、仓库元数据、启动包装和本段说明。',
+            '',
+            ''
+          ].join('\n');
+          fs.writeFileSync(readmePath, `${mirrorNotice}${originalReadme}`);
+
+          fs.appendFileSync(process.env.GITHUB_ENV, `MIRROR_VERSION=${upstreamVersion}\n`);
+          NODE
+
+      - name: 检查版本是否需要发布
+        shell: bash
+        run: |
+          set -euo pipefail
+          error_file="$RUNNER_TEMP/npm-view-error.log"
+          if npm view "$PACKAGE_NAME@$MIRROR_VERSION" version --json \
+            > "$RUNNER_TEMP/npm-view.json" 2> "$error_file"; then
+            {
+              echo "SHOULD_PUBLISH=false"
+              echo "PUBLISH_RESULT=版本已经存在，未发布"
+            } >> "$GITHUB_ENV"
+          elif grep -q "E404" "$error_file"; then
+            {
+              echo "SHOULD_PUBLISH=true"
+              echo "PUBLISH_RESULT=发现新的上游版本，等待发布"
+            } >> "$GITHUB_ENV"
+          else
+            cat "$error_file" >&2
+            exit 1
+          fi
+
+      - name: 安装依赖并构建
+        if: env.SHOULD_PUBLISH == 'true'
+        working-directory: ${{ env.PACKAGE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm run build
+          node <<'NODE'
+          if (process.env.FIX_NODE_BIN === 'true') {
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const packageData = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const binPath = typeof packageData.bin === 'string'
+              ? packageData.bin
+              : Object.values(packageData.bin)[0];
+            const absoluteBinPath = path.resolve(binPath);
+            const content = fs.readFileSync(absoluteBinPath, 'utf8');
+            if (!content.startsWith('#!')) {
+              fs.writeFileSync(absoluteBinPath, `#!/usr/bin/env node\n${content}`);
+            }
+            fs.chmodSync(absoluteBinPath, 0o755);
+          }
+          NODE
+
+      - name: 检查发布内容
+        if: env.SHOULD_PUBLISH == 'true'
+        working-directory: ${{ env.PACKAGE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --ignore-scripts --json > "$RUNNER_TEMP/pack-report.json"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const report = JSON.parse(
+            fs.readFileSync(`${process.env.RUNNER_TEMP}/pack-report.json`, 'utf8')
+          )[0];
+          const paths = new Set(report.files.map((file) => file.path));
+          for (const requiredPath of ['LICENSE', 'README.md', 'package.json']) {
+            if (!paths.has(requiredPath)) {
+              throw new Error(`发布包缺少必要文件：${requiredPath}`);
+            }
+          }
+          if (report.name !== process.env.PACKAGE_NAME) {
+            throw new Error(`发布包名不正确：${report.name}`);
+          }
+          const packageData = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const binPaths = typeof packageData.bin === 'string'
+            ? [packageData.bin]
+            : Object.values(packageData.bin);
+          for (const binPath of binPaths) {
+            const content = fs.readFileSync(path.resolve(binPath), 'utf8');
+            if (!content.startsWith('#!')) {
+              throw new Error(`npm 可执行入口缺少启动标记：${binPath}`);
+            }
+          }
+          NODE
+
+      - name: 发布新版本
+        if: env.SHOULD_PUBLISH == 'true'
+        working-directory: ${{ env.PACKAGE_DIR }}
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          npm publish \
+            --access public \
+            --tag latest \
+            --ignore-scripts \
+            --registry https://registry.npmjs.org
+          echo "PUBLISH_RESULT=发布成功" >> "$GITHUB_ENV"
+
+      - name: 写入任务摘要
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## npm 镜像结果"
+            echo
+            echo "- 包：\`$PACKAGE_NAME@$MIRROR_VERSION\`"
+            echo "- 上游提交：\`$UPSTREAM_SHA\`"
+            echo "- 功能源码：未修改"
+            echo "- 发布结果：${PUBLISH_RESULT:-未执行}"
+          } >> "$GITHUB_STEP_SUMMARY"
